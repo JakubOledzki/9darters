@@ -4,6 +4,5 @@ node_modules
 .run-logs
 mysql-data
 mysql-data-local
-apps/api/drizzle/meta
 apps/*/dist
 packages/*/dist
