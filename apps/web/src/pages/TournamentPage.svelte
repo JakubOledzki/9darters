@@ -32,13 +32,6 @@
     return index + 1;
   }
 
-  async function acceptTournament() {
-    await api(`/tournaments/${id}/accept`, {
-      method: "POST"
-    });
-    await loadTournament();
-  }
-
   async function loadTournament() {
     try {
       const data = await api<{
@@ -85,9 +78,6 @@
         <span class="pill">{participants.length} uczestnikow</span>
         <span class="pill">{tournament.isRanking ? "Rankingowy" : "Towarzyski"}</span>
       </div>
-      {#if ownParticipant?.status === "pending"}
-        <button on:click={acceptTournament} type="button">Akceptuj udzial</button>
-      {/if}
       {#if nextMatchId}
         <button class="primary" on:click={() => goto(`/match/${nextMatchId}`)} type="button">Przejdz do kolejnego meczu</button>
       {/if}

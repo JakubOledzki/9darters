@@ -108,7 +108,7 @@ export async function matchRoutes(app: FastifyInstance) {
       { id: awayId, userId: opponent.id, name: opponent.nickname, kind: "registered" }
     ];
 
-    const { id } = await createMatchRecord(
+    const { id, state } = await createMatchRecord(
       app.db,
       {
         name: body.name,
@@ -137,19 +137,27 @@ export async function matchRoutes(app: FastifyInstance) {
           userId: opponent.id,
           displayName: opponent.nickname,
           orderIndex: 1,
-          status: "pending",
-          acceptedAt: null
+          status: "accepted",
+          acceptedAt: new Date().toISOString()
         }
       ]
     );
 
-    await app.db.update(matches).set({ status: "pending" }).where(eq(matches.id, id));
+    await persistMatchState(
+      app.db,
+      id,
+      {
+        ...state,
+        status: "ready"
+      },
+      null
+    );
     await createInAppNotifications(app.db, [
       {
         userId: opponent.id,
         type: "match_invite",
-        title: `${user.nickname} wyzywa Cie na mecz`,
-        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | ${body.playMode === "online" ? "online" : "stacjonarnie"}`,
+        title: `${user.nickname} utworzyl mecz 1v1`,
+        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | ${body.playMode === "online" ? "online" : "stacjonarnie"} | mecz jest gotowy`,
         entityType: "match",
         entityId: id
       }
@@ -158,68 +166,8 @@ export async function matchRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/matches/:id/accept", async (request, reply) => {
-    const user = requireUser(request);
+    requireUser(request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
-    const bundle = await loadMatchBundle(app.db, params.id);
-    if (!bundle) {
-      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
-    }
-
-    const ownParticipant = bundle.participants.find((participant) => participant.userId === user.id);
-    if (!ownParticipant) {
-      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
-    }
-
-    if (ownParticipant.status === "accepted") {
-      return reply.status(204).send();
-    }
-
-    await app.db
-      .update(matchParticipants)
-      .set({
-        status: "accepted",
-        acceptedAt: new Date().toISOString()
-      })
-      .where(and(eq(matchParticipants.matchId, params.id), eq(matchParticipants.userId, user.id)));
-
-    const participants = await app.db
-      .select()
-      .from(matchParticipants)
-      .where(eq(matchParticipants.matchId, params.id))
-      .orderBy(asc(matchParticipants.orderIndex));
-
-    const allAccepted = participants.filter((entry) => entry.userId).every((entry) => entry.status === "accepted");
-    if (allAccepted) {
-      const readyState =
-        bundle.match.stateJson.status === "ready"
-          ? bundle.match.stateJson
-          : {
-              ...bundle.match.stateJson,
-              status: "ready" as const
-            };
-      await persistMatchState(app.db, params.id, readyState, bundle.match.winnerParticipantId);
-      app.io.to(`match:${params.id}`).emit("match:update", readyState);
-    }
-
-    await appendMatchEvent(app.db, params.id, "match_accepted", findParticipantIdForUser(participants, user.id), {});
-    const invitingParticipant = participants.find((participant) => participant.userId && participant.userId !== user.id);
-    if (invitingParticipant?.userId) {
-      await createInAppNotifications(app.db, [
-        {
-          userId: invitingParticipant.userId,
-          type: "match_ready",
-          title: `${user.nickname} zaakceptowal mecz`,
-          body: `Mecz ${bundle.match.name} jest gotowy do startu.`,
-          entityType: "match",
-          entityId: params.id
-        }
-      ]);
-    }
-
-    if (allAccepted) {
-      await maybeStartMatch(app.db, app.io, params.id);
-    }
-
     return reply.status(204).send();
   });
 
@@ -234,8 +182,21 @@ export async function matchRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
     }
 
-    if (bundle.match.status === "accepted") {
-      await app.db.update(matches).set({ status: "ready", updatedAt: new Date().toISOString() }).where(eq(matches.id, params.id));
+    if (
+      bundle.match.status === "pending" ||
+      bundle.match.status === "accepted" ||
+      bundle.match.stateJson.status === "pending" ||
+      bundle.match.stateJson.status === "accepted"
+    ) {
+      await persistMatchState(
+        app.db,
+        params.id,
+        {
+          ...bundle.match.stateJson,
+          status: "ready"
+        },
+        bundle.match.winnerParticipantId
+      );
     }
 
     const started = await maybeStartMatch(app.db, app.io, params.id);

@@ -419,7 +419,7 @@ export async function createTournamentMatches(db: Database, tournamentId: string
       }
     ];
 
-    const { id } = await createMatchRecord(
+    const { id, state } = await createMatchRecord(
       db,
       {
         name: `${tournament.name} - mecz ${index + 1}`,
@@ -437,7 +437,15 @@ export async function createTournamentMatches(db: Database, tournamentId: string
       participantDefs,
       participantSeed
     );
-    await db.update(matches).set({ status: "ready" }).where(eq(matches.id, id));
+    await persistMatchState(
+      db,
+      id,
+      {
+        ...state,
+        status: "ready"
+      },
+      null
+    );
     createdMatches.push(id);
   }
 

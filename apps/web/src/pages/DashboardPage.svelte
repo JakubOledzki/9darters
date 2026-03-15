@@ -113,7 +113,7 @@
       id: "duel",
       title: "Pojedynek 1v1",
       description: "Wyslij zaproszenie i wybierz mecz online albo stacjonarny.",
-      details: "Tryb rankingowy, akceptacja przeciwnika, live"
+      details: "Tryb rankingowy, gotowy od razu, live"
     },
     {
       id: "tournament",
@@ -406,23 +406,11 @@
     }
   }
 
-  async function acceptChallenge(notification: NotificationSummary) {
-    error = "";
-    try {
-      await api(`/matches/${notification.entityId}/accept`, {
-        method: "POST"
-      });
-      await api(`/notifications/${notification.id}/read`, {
-        method: "POST"
-      });
-      await loadDashboard();
-      goto(`/match/${notification.entityId}`);
-    } catch (event) {
-      error = (event as { error?: string }).error ?? "Nie udalo sie zaakceptowac wyzwania.";
-    }
-  }
-
-  function openChallenge(notification: NotificationSummary) {
+  async function openChallenge(notification: NotificationSummary) {
+    await api(`/notifications/${notification.id}/read`, {
+      method: "POST"
+    }).catch(() => undefined);
+    await loadDashboard();
     goto(`/match/${notification.entityId}`);
   }
 </script>
@@ -453,7 +441,7 @@
   <article class="card stack">
     <div class="inline item-head">
       <h2>Wyzwania 1v1</h2>
-      <span class="pill">Oczekuje: {challengeNotifications.length}</span>
+      <span class="pill">Nowe: {challengeNotifications.length}</span>
     </div>
 
     <div class="list">
@@ -462,14 +450,13 @@
           <strong>{notification.title}</strong>
           <span class="muted">{notification.body}</span>
           <div class="inline challenge-actions">
-            <button class="primary" on:click={() => acceptChallenge(notification)} type="button">Akceptuj</button>
-            <button class="ghost" on:click={() => openChallenge(notification)} type="button">Otworz mecz</button>
+            <button class="primary" on:click={() => openChallenge(notification)} type="button">Otworz mecz</button>
           </div>
         </div>
       {:else}
         <div class="list-item">
-          <strong>Brak oczekujacych wyzwan</strong>
-          <span class="muted">Gdy ktos zaprosi Cie do pojedynku 1v1, zobaczysz to tutaj bez szukania po historii.</span>
+          <strong>Brak nowych wyzwan</strong>
+          <span class="muted">Gdy ktos utworzy dla Ciebie pojedynek 1v1, zobaczysz go tutaj bez potwierdzania.</span>
         </div>
       {/each}
     </div>

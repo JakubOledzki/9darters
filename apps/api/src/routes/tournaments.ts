@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { matches, tournamentParticipants, tournaments, users } from "../db/schema.js";
 import { requireUser } from "../lib/auth.js";
-import { createTournamentMatches, resolveTournamentStandings } from "../services/matches.js";
+import { createTournamentMatches, createInAppNotifications, resolveTournamentStandings } from "../services/matches.js";
 
 const createTournamentSchema = z.object({
   name: z.string().trim().min(3).max(160),
@@ -70,11 +70,24 @@ export async function tournamentRoutes(app: FastifyInstance) {
         tournamentId,
         userId: participant.id,
         displayName: participant.nickname,
-        status: "pending" as const,
-        acceptedAt: null,
+        status: "accepted" as const,
+        acceptedAt: timestamp,
         createdAt: timestamp
       }))
     ]);
+
+    await createTournamentMatches(app.db, tournamentId);
+    await createInAppNotifications(
+      app.db,
+      invitedUsers.map((participant) => ({
+        userId: participant.id,
+        type: "tournament_invite",
+        title: `${user.nickname} dodal Cie do turnieju`,
+        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | turniej jest gotowy`,
+        entityType: "tournament",
+        entityId: tournamentId
+      }))
+    );
 
     return reply.status(201).send({ id: tournamentId });
   });
@@ -97,23 +110,7 @@ export async function tournamentRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/tournaments/:id/accept", async (request, reply) => {
-    const user = requireUser(request);
-    const params = z.object({ id: z.string().uuid() }).parse(request.params);
-
-    await app.db
-      .update(tournamentParticipants)
-      .set({ status: "accepted", acceptedAt: new Date().toISOString() })
-      .where(and(eq(tournamentParticipants.tournamentId, params.id), eq(tournamentParticipants.userId, user.id)));
-
-    const participants = await app.db
-      .select()
-      .from(tournamentParticipants)
-      .where(eq(tournamentParticipants.tournamentId, params.id));
-    const allAccepted = participants.every((participant) => participant.status === "accepted");
-    if (allAccepted) {
-      await createTournamentMatches(app.db, params.id);
-    }
-
+    requireUser(request);
     return reply.status(204).send();
   });
 

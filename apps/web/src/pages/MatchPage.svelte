@@ -110,7 +110,14 @@
   $: canUndo = Boolean(canThrow && pendingCount > 0);
   $: canStartMatch = Boolean(
     match &&
-      (match.status === "ready" || match.stateJson.status === "ready" || match.status === "accepted") &&
+      (
+        match.status === "ready" ||
+        match.stateJson.status === "ready" ||
+        match.status === "pending" ||
+        match.stateJson.status === "pending" ||
+        match.status === "accepted" ||
+        match.stateJson.status === "accepted"
+      ) &&
       (isParticipant || isStationaryManager)
   );
   $: canSubmitDefaultTurn = Boolean(
@@ -132,11 +139,6 @@
     match = data.match;
     participants = data.participants;
     ratingPreviewByParticipantId = data.ratingPreviewByParticipantId;
-  }
-
-  async function acceptMatch() {
-    await api(`/matches/${id}/accept`, { method: "POST" });
-    await loadMatch();
   }
 
   async function startMatch() {
@@ -442,9 +444,6 @@
         {/if}
         {#if currentPlayer}
           <span class="pill">Na ruchu: {currentPlayer.name}</span>
-        {/if}
-        {#if participants.some((item) => item.userId === user.id && item.status === "pending")}
-          <button class="ghost compact" on:click={acceptMatch} type="button">Akceptuj</button>
         {/if}
         {#if canStartMatch}
           <button class="secondary compact" on:click={startMatch} type="button">Start</button>
