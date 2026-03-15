@@ -99,6 +99,7 @@
   $: participant = participants.find((item) => item.userId === user.id) ?? null;
   $: isParticipant = Boolean(participant);
   $: isStationaryManager = Boolean(match?.playMode === "stationary" && match.createdByUserId === user.id);
+  $: isCancelled = Boolean(match && (match.status === "cancelled" || match.stateJson.status === "cancelled"));
   $: currentPlayer = match?.stateJson.players[match.stateJson.currentPlayerIndex];
   $: canThrow = Boolean(
     match?.stateJson.status === "live" &&
@@ -126,9 +127,11 @@
         match.status === "accepted" ||
         match.stateJson.status === "accepted"
       ) &&
+      !isCancelled &&
       !canAcceptMatch &&
       (isParticipant || isStationaryManager)
   );
+  $: canCancelMatch = Boolean(match && !isCancelled && (isParticipant || match.createdByUserId === user.id));
   $: canSubmitDefaultTurn = Boolean(
     canThrow && match?.countingMode === "default" && manualScoreDraft.length > 0 && pendingCount === 0
   );
@@ -175,6 +178,32 @@
       socket.emit("match:join", { matchId: id, spectator: false });
     } catch (event) {
       error = (event as { error?: string }).error ?? "Nie udalo sie potwierdzic meczu.";
+    }
+  }
+
+  async function cancelMatch() {
+    if (!match) {
+      return;
+    }
+
+    const confirmed = window.confirm("Czy na pewno chcesz anulowac mecz?");
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      error = "";
+      const response = await api<{ state: MatchData["stateJson"]; ratingReverted: boolean }>(`/matches/${id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      await loadMatch();
+      error = response.ratingReverted
+        ? "Mecz anulowany. dRating zostal przywrocony."
+        : "Mecz anulowany.";
+      socket.emit("match:leave", { matchId: id });
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie anulowac meczu.";
     }
   }
 
@@ -320,11 +349,13 @@
     const parsedScore = Number(manualScoreDraft);
     if (Number.isNaN(parsedScore) || parsedScore < 0 || parsedScore > 180) {
       error = "Podaj wynik tury od 0 do 180.";
+      manualScoreDraft = "";
+      manualDartsUsed = 3;
       return;
     }
 
     error = "";
-    socket.emit("turn:throw", {
+    socket.emit("turn:score", {
       matchId: id,
       throw: {
         score: parsedScore,
@@ -332,7 +363,6 @@
         label: `Suma ${parsedScore}`
       }
     });
-    socket.emit("turn:commit", { matchId: id });
     manualScoreDraft = "";
     manualDartsUsed = 3;
   }
@@ -356,6 +386,10 @@
   function getReadOnlyMessage() {
     if (!match) {
       return "Mozesz obserwowac stan gry, ale nie wykonujesz teraz ruchu.";
+    }
+
+    if (isCancelled) {
+      return "Ten mecz zostal anulowany.";
     }
 
     if (match.playMode === "stationary" && !isStationaryManager) {
@@ -382,7 +416,7 @@
   }
 
   function getRatingPreview(participantId: string) {
-    if (!match || !match.isRanking || match.stateJson.status === "finished") {
+    if (!match || !match.isRanking || match.stateJson.status === "finished" || isCancelled) {
       return null;
     }
 
@@ -409,6 +443,18 @@
     };
 
     const handleError = (payload: { message: string }) => {
+      if (payload.message === "INVALID_TURN_SCORE") {
+        error = "Podaj wynik tury od 0 do 180.";
+        manualScoreDraft = "";
+        manualDartsUsed = 3;
+        return;
+      }
+
+      if (payload.message === "TURN_ALREADY_BUFFERED") {
+        error = "Ta tura czeka juz na zatwierdzenie.";
+        return;
+      }
+
       error = payload.message;
     };
 
@@ -423,7 +469,7 @@
     socket.on("match:viewers", handleViewers);
 
     const refreshTimer = window.setInterval(() => {
-      if (match?.stateJson.status !== "finished") {
+      if (match?.stateJson.status !== "finished" && match?.stateJson.status !== "cancelled") {
         void loadMatch();
       }
     }, 4000);
@@ -476,11 +522,17 @@
         {#if currentPlayer}
           <span class="pill">Na ruchu: {currentPlayer.name}</span>
         {/if}
+        {#if isCancelled}
+          <span class="pill">Anulowany</span>
+        {/if}
         {#if canAcceptMatch}
           <button class="primary compact" on:click={acceptMatch} type="button">Akceptuj</button>
         {/if}
         {#if canStartMatch}
           <button class="secondary compact" on:click={startMatch} type="button">Start</button>
+        {/if}
+        {#if canCancelMatch}
+          <button class="ghost compact" on:click={cancelMatch} type="button">Anuluj</button>
         {/if}
       </div>
     </header>

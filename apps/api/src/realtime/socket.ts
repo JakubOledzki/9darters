@@ -9,6 +9,7 @@ import {
   markParticipantJoined,
   maybeStartMatch,
   registerThrow,
+  submitScoredTurn,
   commitCurrentTurn,
   undoPendingThrow
 } from "../services/matches.js";
@@ -141,6 +142,15 @@ export function createRealtime(app: FastifyInstance) {
     socket.on("turn:throw", async (payload: { matchId: string; throw: Record<string, unknown> }) => {
       try {
         const state = await registerThrow(app.db, io, payload.matchId, socket.data.user.id, payload.throw);
+        socket.emit("match:snapshot", state);
+      } catch (error) {
+        socket.emit("match:error", { message: error instanceof Error ? error.message : "TURN_NOT_ALLOWED" });
+      }
+    });
+
+    socket.on("turn:score", async (payload: { matchId: string; throw: Record<string, unknown> }) => {
+      try {
+        const state = await submitScoredTurn(app.db, io, payload.matchId, socket.data.user.id, payload.throw);
         socket.emit("match:snapshot", state);
       } catch (error) {
         socket.emit("match:error", { message: error instanceof Error ? error.message : "TURN_NOT_ALLOWED" });

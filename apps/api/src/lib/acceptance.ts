@@ -12,5 +12,5 @@ export function isPreStartMatchStatus(status: string) {
 }
 
 export function isResolvedMatchStatus(status: string) {
-  return status === "ready" || status === "live" || status === "finished";
+  return status === "ready" || status === "live" || status === "finished" || status === "cancelled";
 }

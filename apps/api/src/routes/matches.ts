@@ -16,7 +16,9 @@ import {
   listLiveMatches,
   loadMatchBundle,
   maybeStartMatch,
-  persistMatchState
+  persistMatchState,
+  refreshTournamentStatus,
+  revertMatchRating
 } from "../services/matches.js";
 
 const offlineSchema = z.object({
@@ -332,6 +334,89 @@ export async function matchRoutes(app: FastifyInstance) {
     );
     const started = await maybeStartMatch(app.db, app.io, params.id);
     return { state: started };
+  });
+
+  app.post("/api/matches/:id/cancel", async (request, reply) => {
+    const user = requireUser(request);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const bundle = await loadMatchBundle(app.db, params.id);
+    if (!bundle) {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    const participant = bundle.participants.find((item) => item.userId === user.id) ?? null;
+    const canCancel = Boolean(participant || bundle.match.createdByUserId === user.id);
+    if (!canCancel) {
+      return reply.status(403).send({ error: "FORBIDDEN" });
+    }
+
+    if (bundle.match.status === "cancelled" || bundle.match.stateJson.status === "cancelled") {
+      return reply.status(200).send({
+        state: bundle.match.stateJson,
+        ratingReverted: false
+      });
+    }
+
+    const cancelledAt = new Date().toISOString();
+    const revertedRating = await revertMatchRating(app.db, params.id);
+    const cancelledState = {
+      ...bundle.match.stateJson,
+      status: "cancelled" as const,
+      pendingThrows: [],
+      winnerIndex: null,
+      finishedAt: cancelledAt
+    };
+
+    await persistMatchState(app.db, params.id, cancelledState, null);
+    await appendMatchEvent(app.db, params.id, "match_cancelled", participant?.id ?? null, {
+      actorUserId: user.id,
+      actorNickname: user.nickname,
+      ratingReverted: revertedRating.reverted,
+      revertedEntries: revertedRating.entries
+    });
+    await createInAppNotifications(
+      app.db,
+      bundle.participants
+        .filter((entry) => entry.userId && entry.userId !== user.id)
+        .map((entry) => ({
+          userId: entry.userId!,
+          type: "match_cancelled",
+          title: `${bundle.match.name} zostal anulowany`,
+          body: `${user.nickname} anulowal mecz ${bundle.match.mode}.`,
+          entityType: "match",
+          entityId: params.id
+        }))
+    );
+    await logRankingMatchActivity(
+      {
+        id: bundle.match.id,
+        name: bundle.match.name,
+        mode: bundle.match.mode,
+        kind: bundle.match.kind,
+        playMode: bundle.match.playMode,
+        status: "cancelled",
+        isRanking: bundle.match.isRanking,
+        tournamentId: bundle.match.tournamentId
+      },
+      "match_cancelled",
+      {
+        actorUserId: user.id,
+        actorNickname: user.nickname,
+        actorParticipantId: participant?.id ?? null,
+        ratingReverted: revertedRating.reverted,
+        revertedEntries: revertedRating.entries
+      }
+    );
+
+    if (bundle.match.tournamentId) {
+      await refreshTournamentStatus(app.db, bundle.match.tournamentId);
+    }
+
+    app.io.to(`match:${params.id}`).emit("match:update", cancelledState);
+    return reply.status(200).send({
+      state: cancelledState,
+      ratingReverted: revertedRating.reverted
+    });
   });
 
   app.get("/api/matches/:id/state", async (request, reply) => {

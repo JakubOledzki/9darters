@@ -1,7 +1,7 @@
 export type MatchMode = "501" | "301" | "cricket" | "around-the-clock";
 export type MatchKind = "offline" | "duel" | "tournament" | "training";
 export type CountingMode = "default" | "simplified";
-export type MatchStatus = "pending" | "accepted" | "ready" | "live" | "finished" | "declined" | "expired";
+export type MatchStatus = "pending" | "accepted" | "ready" | "live" | "finished" | "cancelled" | "declined" | "expired";
 export type PlayerKind = "registered" | "guest";
 export type TrainingMode = "around-the-clock" | "doubles-practice" | "trebles-practice" | "bull-practice";
 export interface MatchConfig {

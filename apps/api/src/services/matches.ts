@@ -326,6 +326,76 @@ async function notifyFollowersForMatch(
   );
 }
 
+async function deleteResultNotifications(db: Database, matchId: string) {
+  const resultNotifications = await db
+    .select({ id: notifications.id, type: notifications.type })
+    .from(notifications)
+    .where(eq(notifications.entityId, matchId));
+
+  const resultIds = resultNotifications
+    .filter((entry) => entry.type === "match_result")
+    .map((entry) => entry.id);
+
+  if (resultIds.length > 0) {
+    await db.delete(notifications).where(inArray(notifications.id, resultIds));
+  }
+}
+
+export async function revertMatchRating(db: Database, matchId: string) {
+  const rows = await db.select().from(ratingLedger).where(eq(ratingLedger.matchId, matchId));
+  if (rows.length === 0) {
+    return { reverted: false, entries: 0 };
+  }
+
+  const playerIds = [...new Set(rows.map((row) => row.playerUserId))];
+  const userRows = await db.select({ id: users.id, rating: users.rating }).from(users).where(inArray(users.id, playerIds));
+  const currentRatings = new Map(userRows.map((row) => [row.id, row.rating]));
+
+  for (const row of rows) {
+    const currentRating = currentRatings.get(row.playerUserId);
+    if (typeof currentRating !== "number") {
+      continue;
+    }
+
+    const nextRating = currentRating - row.delta;
+    await db.update(users).set({ rating: nextRating }).where(eq(users.id, row.playerUserId));
+    currentRatings.set(row.playerUserId, nextRating);
+  }
+
+  await db.delete(ratingLedger).where(eq(ratingLedger.matchId, matchId));
+  await deleteResultNotifications(db, matchId);
+  return { reverted: true, entries: rows.length };
+}
+
+export async function refreshTournamentStatus(db: Database, tournamentId: string) {
+  const tournamentMatches = await db
+    .select({ status: matches.status })
+    .from(matches)
+    .where(eq(matches.tournamentId, tournamentId));
+
+  if (tournamentMatches.length === 0) {
+    return null;
+  }
+
+  let nextStatus: "pending" | "ready" | "live" | "finished" | "cancelled" = "pending";
+  if (tournamentMatches.some((entry) => entry.status === "live")) {
+    nextStatus = "live";
+  } else if (tournamentMatches.some((entry) => entry.status === "ready")) {
+    nextStatus = "ready";
+  } else if (tournamentMatches.every((entry) => entry.status === "cancelled")) {
+    nextStatus = "cancelled";
+  } else if (tournamentMatches.every((entry) => entry.status === "finished" || entry.status === "cancelled")) {
+    nextStatus = "finished";
+  }
+
+  await db
+    .update(tournaments)
+    .set({ status: nextStatus, updatedAt: nowIso() })
+    .where(eq(tournaments.id, tournamentId));
+
+  return nextStatus;
+}
+
 export async function applyRatingAndNotifications(db: Database, matchId: string) {
   const bundle = await loadMatchBundle(db, matchId);
   if (!bundle || !bundle.match.isRanking) {
@@ -407,16 +477,7 @@ export async function applyRatingAndNotifications(db: Database, matchId: string)
   });
 
   if (bundle.match.tournamentId) {
-    const tournamentMatches = await db
-      .select()
-      .from(matches)
-      .where(eq(matches.tournamentId, bundle.match.tournamentId));
-
-    const unfinished = tournamentMatches.some((entry) => entry.status !== "finished");
-    await db
-      .update(tournaments)
-      .set({ status: unfinished ? "live" : "finished", updatedAt: nowIso() })
-      .where(eq(tournaments.id, bundle.match.tournamentId));
+    await refreshTournamentStatus(db, bundle.match.tournamentId);
   }
 }
 
@@ -577,13 +638,7 @@ export async function createTournamentMatches(db: Database, tournamentId: string
   return createdMatches;
 }
 
-export async function registerThrow(
-  db: Database,
-  io: SocketIOServer,
-  matchId: string,
-  userId: string,
-  entry: ThrowInput
-) {
+async function resolveTurnContext(db: Database, matchId: string, userId: string) {
   const bundle = await loadMatchBundle(db, matchId);
   if (!bundle) {
     throw new Error("MATCH_NOT_FOUND");
@@ -600,6 +655,39 @@ export async function registerThrow(
   if (!canControlStationary && currentPlayer?.participantId !== participant?.id) {
     throw new Error("TURN_NOT_ALLOWED");
   }
+
+  return {
+    bundle,
+    participant,
+    state,
+    currentPlayer
+  };
+}
+
+function assertDefaultTurnEntry(entry: ThrowInput) {
+  const score = entry.score;
+  const dartsUsed = entry.dartsUsed ?? 3;
+  if (
+    typeof score !== "number" ||
+    Number.isNaN(score) ||
+    score < 0 ||
+    score > 180 ||
+    !Number.isInteger(dartsUsed) ||
+    dartsUsed < 1 ||
+    dartsUsed > 3
+  ) {
+    throw new Error("INVALID_TURN_SCORE");
+  }
+}
+
+export async function registerThrow(
+  db: Database,
+  io: SocketIOServer,
+  matchId: string,
+  userId: string,
+  entry: ThrowInput
+) {
+  const { bundle, participant, state, currentPlayer } = await resolveTurnContext(db, matchId, userId);
 
   const nextState = pushThrow(state, entry);
   await persistMatchState(db, matchId, nextState, bundle.match.winnerParticipantId);
@@ -627,28 +715,113 @@ export async function registerThrow(
   return nextState;
 }
 
+export async function submitScoredTurn(
+  db: Database,
+  io: SocketIOServer,
+  matchId: string,
+  userId: string,
+  entry: ThrowInput
+) {
+  const { bundle, participant, state, currentPlayer } = await resolveTurnContext(db, matchId, userId);
+  assertDefaultTurnEntry(entry);
+
+  if (state.pendingThrows.length > 0) {
+    throw new Error("TURN_ALREADY_BUFFERED");
+  }
+
+  const stagedState = pushThrow(state, entry);
+  const winnerParticipantId =
+    stagedState.winnerIndex === null ? null : stagedState.players[stagedState.winnerIndex]?.participantId ?? null;
+
+  await appendMatchEvent(db, matchId, "turn_throw", participant?.id ?? null, { throw: entry });
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: stagedState.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "turn_throw",
+    {
+      actorUserId: userId,
+      actorParticipantId: participant?.id ?? null,
+      currentPlayerParticipantId: currentPlayer?.participantId ?? null,
+      throw: entry,
+      atomicCommit: true
+    }
+  );
+
+  const nextState = commitTurn(stagedState);
+  const committedWinnerParticipantId =
+    nextState.winnerIndex === null ? null : nextState.players[nextState.winnerIndex]?.participantId ?? null;
+  await persistMatchState(db, matchId, nextState, committedWinnerParticipantId ?? winnerParticipantId);
+  await appendMatchEvent(db, matchId, "turn_commit", participant?.id ?? null, {
+    pendingThrows: stagedState.pendingThrows
+  });
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: nextState.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "turn_commit",
+    {
+      actorUserId: userId,
+      actorParticipantId: participant?.id ?? null,
+      nextPlayerParticipantId: nextState.players[nextState.currentPlayerIndex]?.participantId ?? null,
+      pendingThrows: stagedState.pendingThrows,
+      winnerParticipantId: committedWinnerParticipantId,
+      atomicCommit: true
+    }
+  );
+
+  if (nextState.status === "finished") {
+    await logRankingMatchActivity(
+      {
+        id: bundle.match.id,
+        name: bundle.match.name,
+        mode: bundle.match.mode,
+        kind: bundle.match.kind,
+        playMode: bundle.match.playMode,
+        status: nextState.status,
+        isRanking: bundle.match.isRanking,
+        tournamentId: bundle.match.tournamentId
+      },
+      "match_finished",
+      {
+        actorUserId: userId,
+        actorParticipantId: participant?.id ?? null,
+        winnerParticipantId: committedWinnerParticipantId,
+        winnerName:
+          nextState.winnerIndex === null ? null : nextState.players[nextState.winnerIndex]?.name ?? null,
+        atomicCommit: true
+      }
+    );
+    await applyRatingAndNotifications(db, matchId);
+    io.to(`match:${matchId}`).emit("match:finish", nextState);
+  } else {
+    io.to(`match:${matchId}`).emit("match:update", nextState);
+  }
+
+  return nextState;
+}
+
 export async function commitCurrentTurn(
   db: Database,
   io: SocketIOServer,
   matchId: string,
   userId: string
 ) {
-  const bundle = await loadMatchBundle(db, matchId);
-  if (!bundle) {
-    throw new Error("MATCH_NOT_FOUND");
-  }
-
-  const participant = bundle.participants.find((item) => item.userId === userId);
-  const state = bundle.match.stateJson;
-  const canControlStationary = bundle.match.playMode === "stationary" && bundle.match.createdByUserId === userId;
-  if ((!participant && !canControlStationary) || state.status !== "live") {
-    throw new Error("TURN_NOT_ALLOWED");
-  }
-
-  const currentPlayer = state.players[state.currentPlayerIndex];
-  if (!canControlStationary && currentPlayer?.participantId !== participant?.id) {
-    throw new Error("TURN_NOT_ALLOWED");
-  }
+  const { bundle, participant, state } = await resolveTurnContext(db, matchId, userId);
 
   const nextState = commitTurn(state);
   const winnerParticipantId =
@@ -714,22 +887,7 @@ export async function undoPendingThrow(
   matchId: string,
   userId: string
 ) {
-  const bundle = await loadMatchBundle(db, matchId);
-  if (!bundle) {
-    throw new Error("MATCH_NOT_FOUND");
-  }
-
-  const participant = bundle.participants.find((item) => item.userId === userId);
-  const state = bundle.match.stateJson;
-  const canControlStationary = bundle.match.playMode === "stationary" && bundle.match.createdByUserId === userId;
-  if ((!participant && !canControlStationary) || state.status !== "live") {
-    throw new Error("TURN_NOT_ALLOWED");
-  }
-
-  const currentPlayer = state.players[state.currentPlayerIndex];
-  if (!canControlStationary && currentPlayer?.participantId !== participant?.id) {
-    throw new Error("TURN_NOT_ALLOWED");
-  }
+  const { bundle, participant, state } = await resolveTurnContext(db, matchId, userId);
 
   const nextState = removeLastPendingThrow(state);
   await persistMatchState(db, matchId, nextState, bundle.match.winnerParticipantId);

@@ -28,6 +28,7 @@ describe("acceptance helpers", () => {
     expect(isResolvedMatchStatus("ready")).toBe(true);
     expect(isResolvedMatchStatus("live")).toBe(true);
     expect(isResolvedMatchStatus("finished")).toBe(true);
+    expect(isResolvedMatchStatus("cancelled")).toBe(true);
     expect(isResolvedMatchStatus("pending")).toBe(false);
   });
 });

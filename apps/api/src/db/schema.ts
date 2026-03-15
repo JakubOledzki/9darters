@@ -19,6 +19,7 @@ const matchStatusEnum = mysqlEnum("match_status", [
   "ready",
   "live",
   "finished",
+  "cancelled",
   "declined",
   "expired"
 ]);

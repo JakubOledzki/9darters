@@ -8,6 +8,7 @@ export type MatchStatus =
   | "ready"
   | "live"
   | "finished"
+  | "cancelled"
   | "declined"
   | "expired";
 
