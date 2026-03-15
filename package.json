@@ -1,0 +1,17 @@
+{
+  "name": "9darters-losice",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @9darters/web",
+    "dev:api": "npm run dev --workspace @9darters/api",
+    "build": "npm run build --workspace @9darters/shared && npm run build --workspace @9darters/api && npm run build --workspace @9darters/web",
+    "test": "npm run test --workspace @9darters/shared && npm run test --workspace @9darters/api && npm run test --workspace @9darters/web",
+    "db:generate": "npm run db:generate --workspace @9darters/api",
+    "db:migrate": "npm run db:migrate --workspace @9darters/api"
+  }
+}

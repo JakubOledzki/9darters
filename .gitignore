@@ -1,0 +1,14 @@
+node_modules
+dist
+.svelte-kit
+.vite
+coverage
+.env
+.env.local
+.DS_Store
+Thumbs.db
+apps/api/drizzle
+apps/api/.wrangler
+apps/web/dev-dist
+mysql-data
+mysql-data-local

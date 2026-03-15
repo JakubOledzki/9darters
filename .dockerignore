@@ -1,0 +1,9 @@
+.git
+node_modules
+.npm-cache
+.run-logs
+mysql-data
+mysql-data-local
+apps/api/drizzle/meta
+apps/*/dist
+packages/*/dist
