@@ -389,6 +389,12 @@
     socket.on("match:error", handleError);
     socket.on("match:viewers", handleViewers);
 
+    const refreshTimer = window.setInterval(() => {
+      if (match?.stateJson.status !== "finished") {
+        void loadMatch();
+      }
+    }, 4000);
+
     void (async () => {
       await loadMatch();
 
@@ -401,6 +407,7 @@
     })();
 
     return () => {
+      window.clearInterval(refreshTimer);
       socket.emit("match:leave", { matchId: id });
       socket.off("match:snapshot", handleSnapshot);
       socket.off("match:update", handleUpdate);

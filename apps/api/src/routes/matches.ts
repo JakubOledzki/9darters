@@ -13,7 +13,8 @@ import {
   findParticipantIdForUser,
   listLiveMatches,
   loadMatchBundle,
-  maybeStartMatch
+  maybeStartMatch,
+  persistMatchState
 } from "../services/matches.js";
 
 const offlineSchema = z.object({
@@ -189,7 +190,15 @@ export async function matchRoutes(app: FastifyInstance) {
 
     const allAccepted = participants.filter((entry) => entry.userId).every((entry) => entry.status === "accepted");
     if (allAccepted) {
-      await app.db.update(matches).set({ status: "ready", updatedAt: new Date().toISOString() }).where(eq(matches.id, params.id));
+      const readyState =
+        bundle.match.stateJson.status === "ready"
+          ? bundle.match.stateJson
+          : {
+              ...bundle.match.stateJson,
+              status: "ready" as const
+            };
+      await persistMatchState(app.db, params.id, readyState, bundle.match.winnerParticipantId);
+      app.io.to(`match:${params.id}`).emit("match:update", readyState);
     }
 
     await appendMatchEvent(app.db, params.id, "match_accepted", findParticipantIdForUser(participants, user.id), {});
