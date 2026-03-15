@@ -67,7 +67,10 @@
 
   async function acceptTournament() {
     try {
-      await api(`/tournaments/${id}/accept`, { method: "POST" });
+      await api(`/tournaments/${id}/accept`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
       await loadTournament();
     } catch (event) {
       error = (event as { error?: string }).error ?? "Nie udalo sie potwierdzic turnieju.";

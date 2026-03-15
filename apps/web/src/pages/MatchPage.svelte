@@ -153,7 +153,10 @@
   async function startMatch() {
     try {
       error = "";
-      await api(`/matches/${id}/start`, { method: "POST" });
+      await api(`/matches/${id}/start`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
       await loadMatch();
       socket.emit(isParticipant ? "match:join" : "spectator:join", { matchId: id, spectator: !isParticipant });
     } catch (event) {
@@ -164,7 +167,10 @@
   async function acceptMatch() {
     try {
       error = "";
-      await api(`/matches/${id}/accept`, { method: "POST" });
+      await api(`/matches/${id}/accept`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
       await loadMatch();
       socket.emit("match:join", { matchId: id, spectator: false });
     } catch (event) {

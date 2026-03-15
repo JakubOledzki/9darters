@@ -12,3 +12,5 @@ apps/web/dev-dist
 mysql-data
 mysql-data-local
 logs
+apps/web/src/**/*.js
+apps/web/src/**/*.js.map

@@ -46,7 +46,8 @@
 
   async function markRead(notificationId: string) {
     await api(`/notifications/${notificationId}/read`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify({})
     });
     await loadSocial();
   }

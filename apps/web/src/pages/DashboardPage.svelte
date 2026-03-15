@@ -414,10 +414,12 @@
     error = "";
     try {
       await api(`/matches/${notification.entityId}/accept`, {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({})
       });
       await api(`/notifications/${notification.id}/read`, {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({})
       }).catch(() => undefined);
       await loadDashboard();
       goto(`/match/${notification.entityId}`);
@@ -428,7 +430,8 @@
 
   async function markChallengeRead(notification: NotificationSummary) {
     await api(`/notifications/${notification.id}/read`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify({})
     }).catch(() => undefined);
     await loadDashboard();
   }

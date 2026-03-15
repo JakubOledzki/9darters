@@ -67,7 +67,8 @@ export async function register(payload: {
 export async function logout() {
   try {
     await api("/auth/logout", {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify({})
     });
   } catch {
     // Treat logout as local success even if the server session is already gone.

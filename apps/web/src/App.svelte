@@ -33,6 +33,7 @@
   $: activeRoute = $route;
   $: authState = $session;
   $: isAuthenticated = Boolean(authState.user);
+  $: showAdmin = authState.user?.isAdmin === true;
   $: isMatchRoute = activeRoute.name === "match";
   $: if (typeof document !== "undefined") {
     if (isMatchRoute) {
@@ -69,7 +70,7 @@
           <button on:click={() => goto("/history")} type="button">Historia</button>
           <button on:click={() => goto("/training")} type="button">Trening</button>
           <button on:click={() => goto("/social")} type="button">Social</button>
-          {#if authState.user?.isAdmin}
+          {#if showAdmin}
             <button on:click={() => goto("/admin")} type="button">Admin</button>
           {/if}
           <button class="secondary" on:click={signOut} type="button">Wyloguj</button>
@@ -91,7 +92,7 @@
       <MatchPage id={activeRoute.id} user={authState.user!} />
     {:else if activeRoute.name === "tournament"}
       <TournamentPage id={activeRoute.id} user={authState.user!} />
-    {:else if activeRoute.name === "admin" && authState.user?.isAdmin}
+    {:else if activeRoute.name === "admin" && showAdmin}
       <AdminPage />
     {:else}
       <DashboardPage user={authState.user!} />
