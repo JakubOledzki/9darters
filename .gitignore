@@ -11,3 +11,4 @@ apps/api/.wrangler
 apps/web/dev-dist
 mysql-data
 mysql-data-local
+logs

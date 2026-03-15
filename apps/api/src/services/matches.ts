@@ -28,6 +28,7 @@ import {
   tournaments,
   users
 } from "../db/schema.js";
+import { logRankingMatchActivity, logRankingTournamentActivity } from "../lib/rankingActivityLogger.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -176,6 +177,28 @@ export async function createMatchRecord(
   await appendMatchEvent(db, id, "match_created", participantSeed[0]?.id ?? null, {
     config
   });
+  await logRankingMatchActivity(
+    {
+      id,
+      name: config.name,
+      mode: config.mode,
+      kind: config.kind,
+      playMode: config.playMode,
+      status: state.status,
+      isRanking: config.isRanking,
+      tournamentId: config.tournamentId ?? null
+    },
+    "match_created",
+    {
+      createdByUserId: config.createdByUserId,
+      participants: participantSeed.map((participant) => ({
+        participantId: participant.id,
+        userId: participant.userId ?? null,
+        displayName: participant.displayName,
+        status: participant.status
+      }))
+    }
+  );
 
   return { id, state };
 }
@@ -208,6 +231,23 @@ export async function maybeStartMatch(db: Database, io: SocketIOServer, matchId:
     if (bundle.match.status === "ready" || bundle.match.status === "accepted") {
       const started = beginLiveMatch(bundle.match.stateJson);
       await persistMatchState(db, matchId, started);
+      await logRankingMatchActivity(
+        {
+          id: bundle.match.id,
+          name: bundle.match.name,
+          mode: bundle.match.mode,
+          kind: bundle.match.kind,
+          playMode: bundle.match.playMode,
+          status: started.status,
+          isRanking: bundle.match.isRanking,
+          tournamentId: bundle.match.tournamentId
+        },
+        "match_live_started",
+        {
+          startedAt: started.startedAt,
+          trigger: "stationary_ready"
+        }
+      );
       io.to(`match:${matchId}`).emit("match:update", started);
       return started;
     }
@@ -224,6 +264,24 @@ export async function maybeStartMatch(db: Database, io: SocketIOServer, matchId:
   if (bundle.match.status === "ready" || bundle.match.status === "accepted" || bundle.match.kind === "offline") {
     const started = beginLiveMatch(bundle.match.stateJson);
     await persistMatchState(db, matchId, started);
+    await logRankingMatchActivity(
+      {
+        id: bundle.match.id,
+        name: bundle.match.name,
+        mode: bundle.match.mode,
+        kind: bundle.match.kind,
+        playMode: bundle.match.playMode,
+        status: started.status,
+        isRanking: bundle.match.isRanking,
+        tournamentId: bundle.match.tournamentId
+      },
+      "match_live_started",
+      {
+        startedAt: started.startedAt,
+        joinedParticipants: joinedCount,
+        participantCount
+      }
+    );
     io.to(`match:${matchId}`).emit("match:update", started);
     return started;
   }
@@ -315,6 +373,30 @@ export async function applyRatingAndNotifications(db: Database, matchId: string)
       createdAt: nowIso()
     }
   ]);
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: bundle.match.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "rating_applied",
+    {
+      winnerUserId: winner.userId,
+      winnerName: winner.name,
+      loserUserId: loser.userId,
+      loserName: loser.name,
+      delta,
+      winnerBefore: winnerUser.rating,
+      winnerAfter,
+      loserBefore: loserUser.rating,
+      loserAfter
+    }
+  );
 
   await notifyFollowersForMatch(db, {
     matchId,
@@ -377,6 +459,12 @@ export async function createTournamentMatches(db: Database, tournamentId: string
   const [tournament] = await db.select().from(tournaments).where(eq(tournaments.id, tournamentId)).limit(1);
   if (!tournament) {
     return [];
+  }
+
+  const existingMatches = await db.select({ id: matches.id }).from(matches).where(eq(matches.tournamentId, tournamentId));
+  if (existingMatches.length > 0) {
+    await db.update(tournaments).set({ status: "ready", updatedAt: nowIso() }).where(eq(tournaments.id, tournamentId));
+    return existingMatches.map((match) => match.id);
   }
 
   const participants = await db
@@ -446,10 +534,46 @@ export async function createTournamentMatches(db: Database, tournamentId: string
       },
       null
     );
+    await logRankingMatchActivity(
+      {
+        id,
+        name: `${tournament.name} - mecz ${index + 1}`,
+        mode: tournament.mode,
+        kind: "tournament",
+        playMode: tournament.playMode,
+        status: "ready",
+        isRanking: tournament.isRanking,
+        tournamentId
+      },
+      "tournament_match_ready",
+      {
+        homeParticipantId: home.id,
+        homeUserId: home.userId,
+        homeName: home.displayName,
+        awayParticipantId: away.id,
+        awayUserId: away.userId,
+        awayName: away.displayName
+      }
+    );
     createdMatches.push(id);
   }
 
   await db.update(tournaments).set({ status: "ready", updatedAt: nowIso() }).where(eq(tournaments.id, tournamentId));
+  await logRankingTournamentActivity(
+    {
+      id: tournament.id,
+      name: tournament.name,
+      mode: tournament.mode,
+      playMode: tournament.playMode,
+      status: "ready",
+      isRanking: tournament.isRanking
+    },
+    "tournament_ready",
+    {
+      createdMatchIds: createdMatches,
+      participantCount: participants.length
+    }
+  );
   return createdMatches;
 }
 
@@ -480,6 +604,25 @@ export async function registerThrow(
   const nextState = pushThrow(state, entry);
   await persistMatchState(db, matchId, nextState, bundle.match.winnerParticipantId);
   await appendMatchEvent(db, matchId, "turn_throw", participant?.id ?? null, { throw: entry });
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: nextState.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "turn_throw",
+    {
+      actorUserId: userId,
+      actorParticipantId: participant?.id ?? null,
+      currentPlayerParticipantId: currentPlayer?.participantId ?? null,
+      throw: entry
+    }
+  );
   io.to(`match:${matchId}`).emit("match:update", nextState);
   return nextState;
 }
@@ -514,8 +657,48 @@ export async function commitCurrentTurn(
   await appendMatchEvent(db, matchId, "turn_commit", participant?.id ?? null, {
     pendingThrows: state.pendingThrows
   });
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: nextState.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "turn_commit",
+    {
+      actorUserId: userId,
+      actorParticipantId: participant?.id ?? null,
+      nextPlayerParticipantId: nextState.players[nextState.currentPlayerIndex]?.participantId ?? null,
+      pendingThrows: state.pendingThrows,
+      winnerParticipantId
+    }
+  );
 
   if (nextState.status === "finished") {
+    await logRankingMatchActivity(
+      {
+        id: bundle.match.id,
+        name: bundle.match.name,
+        mode: bundle.match.mode,
+        kind: bundle.match.kind,
+        playMode: bundle.match.playMode,
+        status: nextState.status,
+        isRanking: bundle.match.isRanking,
+        tournamentId: bundle.match.tournamentId
+      },
+      "match_finished",
+      {
+        actorUserId: userId,
+        actorParticipantId: participant?.id ?? null,
+        winnerParticipantId,
+        winnerName:
+          nextState.winnerIndex === null ? null : nextState.players[nextState.winnerIndex]?.name ?? null
+      }
+    );
     await applyRatingAndNotifications(db, matchId);
     io.to(`match:${matchId}`).emit("match:finish", nextState);
   } else {
@@ -553,6 +736,24 @@ export async function undoPendingThrow(
   await appendMatchEvent(db, matchId, "turn_undo", participant?.id ?? null, {
     pendingThrows: nextState.pendingThrows
   });
+  await logRankingMatchActivity(
+    {
+      id: bundle.match.id,
+      name: bundle.match.name,
+      mode: bundle.match.mode,
+      kind: bundle.match.kind,
+      playMode: bundle.match.playMode,
+      status: nextState.status,
+      isRanking: bundle.match.isRanking,
+      tournamentId: bundle.match.tournamentId
+    },
+    "turn_undo",
+    {
+      actorUserId: userId,
+      actorParticipantId: participant?.id ?? null,
+      pendingThrows: nextState.pendingThrows
+    }
+  );
   io.to(`match:${matchId}`).emit("match:update", nextState);
   return nextState;
 }

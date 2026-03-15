@@ -3,7 +3,9 @@ import { and, asc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { matches, tournamentParticipants, tournaments, users } from "../db/schema.js";
+import { areAllParticipantsAccepted } from "../lib/acceptance.js";
 import { requireUser } from "../lib/auth.js";
+import { logRankingTournamentActivity } from "../lib/rankingActivityLogger.js";
 import { createTournamentMatches, createInAppNotifications, resolveTournamentStandings } from "../services/matches.js";
 
 const createTournamentSchema = z.object({
@@ -70,23 +72,39 @@ export async function tournamentRoutes(app: FastifyInstance) {
         tournamentId,
         userId: participant.id,
         displayName: participant.nickname,
-        status: "accepted" as const,
-        acceptedAt: timestamp,
+        status: "pending" as const,
+        acceptedAt: null,
         createdAt: timestamp
       }))
     ]);
 
-    await createTournamentMatches(app.db, tournamentId);
     await createInAppNotifications(
       app.db,
       invitedUsers.map((participant) => ({
         userId: participant.id,
         type: "tournament_invite",
         title: `${user.nickname} dodal Cie do turnieju`,
-        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | turniej jest gotowy`,
+        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | czeka na Twoje potwierdzenie`,
         entityType: "tournament",
         entityId: tournamentId
       }))
+    );
+    await logRankingTournamentActivity(
+      {
+        id: tournamentId,
+        name: body.name,
+        mode: body.mode,
+        playMode: body.playMode,
+        status: "pending",
+        isRanking: body.isRanking
+      },
+      "tournament_created",
+      {
+        createdByUserId: user.id,
+        createdByNickname: user.nickname,
+        invitedUserIds: invitedUsers.map((participant) => participant.id),
+        invitedNicknames: invitedUsers.map((participant) => participant.nickname)
+      }
     );
 
     return reply.status(201).send({ id: tournamentId });
@@ -110,7 +128,91 @@ export async function tournamentRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/tournaments/:id/accept", async (request, reply) => {
-    requireUser(request);
+    const user = requireUser(request);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const [tournament] = await app.db.select().from(tournaments).where(eq(tournaments.id, params.id)).limit(1);
+    if (!tournament) {
+      return reply.status(404).send({ error: "TOURNAMENT_NOT_FOUND" });
+    }
+
+    const [participant] = await app.db
+      .select()
+      .from(tournamentParticipants)
+      .where(and(eq(tournamentParticipants.tournamentId, params.id), eq(tournamentParticipants.userId, user.id)))
+      .limit(1);
+
+    if (!participant) {
+      return reply.status(404).send({ error: "TOURNAMENT_NOT_FOUND" });
+    }
+
+    if (participant.status !== "accepted") {
+      await app.db
+        .update(tournamentParticipants)
+        .set({
+          status: "accepted",
+          acceptedAt: new Date().toISOString()
+        })
+        .where(eq(tournamentParticipants.id, participant.id));
+      await logRankingTournamentActivity(
+        {
+          id: tournament.id,
+          name: tournament.name,
+          mode: tournament.mode,
+          playMode: tournament.playMode,
+          status: tournament.status,
+          isRanking: tournament.isRanking
+        },
+        "tournament_accepted",
+        {
+          actorUserId: user.id,
+          actorNickname: user.nickname,
+          participantId: participant.id
+        }
+      );
+    }
+
+    const refreshedParticipants = await app.db
+      .select()
+      .from(tournamentParticipants)
+      .where(eq(tournamentParticipants.tournamentId, params.id))
+      .orderBy(asc(tournamentParticipants.createdAt));
+    const allAccepted = areAllParticipantsAccepted(
+      refreshedParticipants.map((entry) => ({
+        userId: entry.userId,
+        status: entry.status
+      }))
+    );
+
+    if (allAccepted && tournament.status === "pending") {
+      const createdMatchIds = await createTournamentMatches(app.db, params.id);
+      await createInAppNotifications(
+        app.db,
+        refreshedParticipants.map((entry) => ({
+          userId: entry.userId,
+          type: "tournament_ready",
+          title: `${tournament.name} jest gotowy`,
+          body: `Wszyscy gracze potwierdzili udzial. Turniej ${tournament.mode} moze sie rozpoczac.`,
+          entityType: "tournament",
+          entityId: params.id
+        }))
+      );
+      await logRankingTournamentActivity(
+        {
+          id: tournament.id,
+          name: tournament.name,
+          mode: tournament.mode,
+          playMode: tournament.playMode,
+          status: "ready",
+          isRanking: tournament.isRanking
+        },
+        "tournament_confirmed",
+        {
+          confirmedParticipantIds: refreshedParticipants.map((entry) => entry.id),
+          createdMatchIds
+        }
+      );
+    }
+
     return reply.status(204).send();
   });
 

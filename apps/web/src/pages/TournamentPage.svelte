@@ -23,6 +23,7 @@
 
   $: ownParticipant = participants.find((participant) => participant.userId === user.id);
   $: podium = standings.slice(0, 3);
+  $: canAcceptTournament = Boolean(tournament && ownParticipant?.status === "pending" && tournament.status === "pending");
 
   function formatPlayMode(playMode: "online" | "stationary") {
     return playMode === "online" ? "online" : "stacjonarnie";
@@ -52,7 +53,26 @@
 
   onMount(() => {
     void loadTournament();
+
+    const refreshTimer = window.setInterval(() => {
+      if (tournament?.status !== "finished") {
+        void loadTournament();
+      }
+    }, 5000);
+
+    return () => {
+      window.clearInterval(refreshTimer);
+    };
   });
+
+  async function acceptTournament() {
+    try {
+      await api(`/tournaments/${id}/accept`, { method: "POST" });
+      await loadTournament();
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie potwierdzic turnieju.";
+    }
+  }
 </script>
 
 {#if tournament}
@@ -78,6 +98,9 @@
         <span class="pill">{participants.length} uczestnikow</span>
         <span class="pill">{tournament.isRanking ? "Rankingowy" : "Towarzyski"}</span>
       </div>
+      {#if canAcceptTournament}
+        <button class="primary" on:click={acceptTournament} type="button">Potwierdz udzial</button>
+      {/if}
       {#if nextMatchId}
         <button class="primary" on:click={() => goto(`/match/${nextMatchId}`)} type="button">Przejdz do kolejnego meczu</button>
       {/if}

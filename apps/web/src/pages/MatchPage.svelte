@@ -108,16 +108,25 @@
   $: pendingCount = match?.stateJson.pendingThrows.length ?? 0;
   $: canCommit = Boolean(canThrow && pendingCount > 0);
   $: canUndo = Boolean(canThrow && pendingCount > 0);
+  $: canAcceptMatch = Boolean(
+    match &&
+      participant?.status === "pending" &&
+      (
+        match.status === "pending" ||
+        match.status === "accepted" ||
+        match.stateJson.status === "pending" ||
+        match.stateJson.status === "accepted"
+      )
+  );
   $: canStartMatch = Boolean(
     match &&
       (
         match.status === "ready" ||
         match.stateJson.status === "ready" ||
-        match.status === "pending" ||
-        match.stateJson.status === "pending" ||
         match.status === "accepted" ||
         match.stateJson.status === "accepted"
       ) &&
+      !canAcceptMatch &&
       (isParticipant || isStationaryManager)
   );
   $: canSubmitDefaultTurn = Boolean(
@@ -142,9 +151,25 @@
   }
 
   async function startMatch() {
-    await api(`/matches/${id}/start`, { method: "POST" });
-    await loadMatch();
-    socket.emit(isParticipant ? "match:join" : "spectator:join", { matchId: id, spectator: !isParticipant });
+    try {
+      error = "";
+      await api(`/matches/${id}/start`, { method: "POST" });
+      await loadMatch();
+      socket.emit(isParticipant ? "match:join" : "spectator:join", { matchId: id, spectator: !isParticipant });
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie uruchomic meczu.";
+    }
+  }
+
+  async function acceptMatch() {
+    try {
+      error = "";
+      await api(`/matches/${id}/accept`, { method: "POST" });
+      await loadMatch();
+      socket.emit("match:join", { matchId: id, spectator: false });
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie potwierdzic meczu.";
+    }
   }
 
   function exitMatch() {
@@ -444,6 +469,9 @@
         {/if}
         {#if currentPlayer}
           <span class="pill">Na ruchu: {currentPlayer.name}</span>
+        {/if}
+        {#if canAcceptMatch}
+          <button class="primary compact" on:click={acceptMatch} type="button">Akceptuj</button>
         {/if}
         {#if canStartMatch}
           <button class="secondary compact" on:click={startMatch} type="button">Start</button>

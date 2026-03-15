@@ -25,8 +25,11 @@ services:
       APP_ORIGIN: ${DOCKER_APP_ORIGIN:-http://localhost}
       COOKIE_DOMAIN: ${DOCKER_COOKIE_DOMAIN:-localhost}
       COOKIE_SECURE: ${DOCKER_COOKIE_SECURE:-false}
+      RANKING_ACTIVITY_LOG_PATH: ${DOCKER_RANKING_ACTIVITY_LOG_PATH:-logs/ranking-activity.log}
     expose:
       - "4000"
+    volumes:
+      - ./logs:/app/logs
 
   web:
     build:

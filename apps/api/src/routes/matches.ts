@@ -4,7 +4,9 @@ import { and, asc, eq, inArray, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { matchParticipants, matches, users } from "../db/schema.js";
+import { areAllParticipantsAccepted, isPreStartMatchStatus, isResolvedMatchStatus } from "../lib/acceptance.js";
 import { requireUser } from "../lib/auth.js";
+import { logRankingMatchActivity } from "../lib/rankingActivityLogger.js";
 import {
   appendMatchEvent,
   canUserParticipate,
@@ -137,37 +139,138 @@ export async function matchRoutes(app: FastifyInstance) {
           userId: opponent.id,
           displayName: opponent.nickname,
           orderIndex: 1,
-          status: "accepted",
-          acceptedAt: new Date().toISOString()
+          status: "pending",
+          acceptedAt: null
         }
       ]
     );
 
-    await persistMatchState(
-      app.db,
-      id,
-      {
-        ...state,
-        status: "ready"
-      },
-      null
-    );
     await createInAppNotifications(app.db, [
       {
         userId: opponent.id,
         type: "match_invite",
         title: `${user.nickname} utworzyl mecz 1v1`,
-        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | ${body.playMode === "online" ? "online" : "stacjonarnie"} | mecz jest gotowy`,
+        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | ${body.playMode === "online" ? "online" : "stacjonarnie"} | czeka na Twoje potwierdzenie`,
         entityType: "match",
         entityId: id
       }
     ]);
+    await logRankingMatchActivity(
+      {
+        id,
+        name: body.name,
+        mode: body.mode,
+        kind: "duel",
+        playMode: body.playMode,
+        status: state.status,
+        isRanking: body.isRanking,
+        tournamentId: null
+      },
+      "match_invited",
+      {
+        createdByUserId: user.id,
+        createdByNickname: user.nickname,
+        opponentUserId: opponent.id,
+        opponentNickname: opponent.nickname
+      }
+    );
     return reply.status(201).send({ id });
   });
 
   app.post("/api/matches/:id/accept", async (request, reply) => {
-    requireUser(request);
+    const user = requireUser(request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const bundle = await loadMatchBundle(app.db, params.id);
+    if (!bundle || bundle.match.kind !== "duel") {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    const participant = bundle.participants.find((item) => item.userId === user.id);
+    if (!participant) {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    const now = new Date().toISOString();
+    if (participant.status !== "accepted") {
+      await app.db
+        .update(matchParticipants)
+        .set({
+          status: "accepted",
+          acceptedAt: now
+        })
+        .where(eq(matchParticipants.id, participant.id));
+      await appendMatchEvent(app.db, params.id, "match_accepted", participant.id, {
+        userId: user.id,
+        nickname: user.nickname
+      });
+      await logRankingMatchActivity(
+        {
+          id: bundle.match.id,
+          name: bundle.match.name,
+          mode: bundle.match.mode,
+          kind: bundle.match.kind,
+          playMode: bundle.match.playMode,
+          status: bundle.match.status,
+          isRanking: bundle.match.isRanking,
+          tournamentId: bundle.match.tournamentId
+        },
+        "match_accepted",
+        {
+          actorUserId: user.id,
+          actorNickname: user.nickname,
+          actorParticipantId: participant.id
+        }
+      );
+    }
+
+    const refreshedBundle = await loadMatchBundle(app.db, params.id);
+    if (!refreshedBundle) {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    const allAccepted = areAllParticipantsAccepted(refreshedBundle.participants);
+    const alreadyReady =
+      isResolvedMatchStatus(refreshedBundle.match.status) || isResolvedMatchStatus(refreshedBundle.match.stateJson.status);
+
+    if (allAccepted && !alreadyReady) {
+      const readyState = {
+        ...refreshedBundle.match.stateJson,
+        status: "ready" as const
+      };
+      await persistMatchState(app.db, params.id, readyState, refreshedBundle.match.winnerParticipantId);
+      app.io.to(`match:${params.id}`).emit("match:update", readyState);
+      await createInAppNotifications(
+        app.db,
+        refreshedBundle.participants
+          .filter((entry) => entry.userId && entry.userId !== user.id)
+          .map((entry) => ({
+            userId: entry.userId!,
+            type: "match_ready",
+            title: `${bundle.match.name} jest gotowy`,
+            body: `Wszyscy gracze potwierdzili mecz ${bundle.match.mode}. Mozesz wejsc do spotkania i rozpoczac gre.`,
+            entityType: "match",
+            entityId: params.id
+          }))
+      );
+      await logRankingMatchActivity(
+        {
+          id: refreshedBundle.match.id,
+          name: refreshedBundle.match.name,
+          mode: refreshedBundle.match.mode,
+          kind: refreshedBundle.match.kind,
+          playMode: refreshedBundle.match.playMode,
+          status: "ready",
+          isRanking: refreshedBundle.match.isRanking,
+          tournamentId: refreshedBundle.match.tournamentId
+        },
+        "match_ready",
+        {
+          confirmedParticipantIds: refreshedBundle.participants.map((entry) => entry.id)
+        }
+      );
+      await maybeStartMatch(app.db, app.io, params.id);
+    }
+
     return reply.status(204).send();
   });
 
@@ -182,11 +285,13 @@ export async function matchRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
     }
 
+    const allAccepted = areAllParticipantsAccepted(bundle.participants);
     if (
-      bundle.match.status === "pending" ||
-      bundle.match.status === "accepted" ||
-      bundle.match.stateJson.status === "pending" ||
-      bundle.match.stateJson.status === "accepted"
+      allAccepted &&
+      (
+        isPreStartMatchStatus(bundle.match.status) ||
+        isPreStartMatchStatus(bundle.match.stateJson.status)
+      )
     ) {
       await persistMatchState(
         app.db,
@@ -197,8 +302,34 @@ export async function matchRoutes(app: FastifyInstance) {
         },
         bundle.match.winnerParticipantId
       );
+    } else if (
+      !allAccepted &&
+      (
+        isPreStartMatchStatus(bundle.match.status) ||
+        isPreStartMatchStatus(bundle.match.stateJson.status)
+      )
+    ) {
+      return reply.status(409).send({ error: "MATCH_AWAITING_ACCEPTANCE" });
     }
 
+    await logRankingMatchActivity(
+      {
+        id: bundle.match.id,
+        name: bundle.match.name,
+        mode: bundle.match.mode,
+        kind: bundle.match.kind,
+        playMode: bundle.match.playMode,
+        status: bundle.match.status,
+        isRanking: bundle.match.isRanking,
+        tournamentId: bundle.match.tournamentId
+      },
+      "match_start_requested",
+      {
+        actorUserId: user.id,
+        actorNickname: user.nickname,
+        stationaryController: canControlStationary
+      }
+    );
     const started = await maybeStartMatch(app.db, app.io, params.id);
     return { state: started };
   });

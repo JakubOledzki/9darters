@@ -113,7 +113,7 @@
       id: "duel",
       title: "Pojedynek 1v1",
       description: "Wyslij zaproszenie i wybierz mecz online albo stacjonarny.",
-      details: "Tryb rankingowy, gotowy od razu, live"
+      details: "Tryb rankingowy, potwierdzenie przeciwnika, live"
     },
     {
       id: "tournament",
@@ -407,11 +407,30 @@
   }
 
   async function openChallenge(notification: NotificationSummary) {
+    goto(`/match/${notification.entityId}`);
+  }
+
+  async function acceptChallenge(notification: NotificationSummary) {
+    error = "";
+    try {
+      await api(`/matches/${notification.entityId}/accept`, {
+        method: "POST"
+      });
+      await api(`/notifications/${notification.id}/read`, {
+        method: "POST"
+      }).catch(() => undefined);
+      await loadDashboard();
+      goto(`/match/${notification.entityId}`);
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie potwierdzic pojedynku.";
+    }
+  }
+
+  async function markChallengeRead(notification: NotificationSummary) {
     await api(`/notifications/${notification.id}/read`, {
       method: "POST"
     }).catch(() => undefined);
     await loadDashboard();
-    goto(`/match/${notification.entityId}`);
   }
 </script>
 
@@ -450,13 +469,15 @@
           <strong>{notification.title}</strong>
           <span class="muted">{notification.body}</span>
           <div class="inline challenge-actions">
+            <button class="primary" on:click={() => acceptChallenge(notification)} type="button">Akceptuj</button>
             <button class="primary" on:click={() => openChallenge(notification)} type="button">Otworz mecz</button>
+            <button class="ghost" on:click={() => markChallengeRead(notification)} type="button">Oznacz jako przeczytane</button>
           </div>
         </div>
       {:else}
         <div class="list-item">
           <strong>Brak nowych wyzwan</strong>
-          <span class="muted">Gdy ktos utworzy dla Ciebie pojedynek 1v1, zobaczysz go tutaj bez potwierdzania.</span>
+          <span class="muted">Gdy ktos utworzy dla Ciebie pojedynek 1v1, zobaczysz go tutaj i potwierdzisz udzial.</span>
         </div>
       {/each}
     </div>

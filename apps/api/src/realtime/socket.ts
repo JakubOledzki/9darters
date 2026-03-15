@@ -2,6 +2,7 @@ import { parse } from "cookie";
 import type { FastifyInstance } from "fastify";
 import { Server as SocketIOServer } from "socket.io";
 import { getUserBySessionToken } from "../lib/auth.js";
+import { logRankingMatchActivity } from "../lib/rankingActivityLogger.js";
 import {
   findParticipantIdForUser,
   loadMatchBundle,
@@ -75,6 +76,25 @@ export function createRealtime(app: FastifyInstance) {
       if (participantId) {
         await markParticipantJoined(app.db, participantId);
       }
+      await logRankingMatchActivity(
+        {
+          id: bundle.match.id,
+          name: bundle.match.name,
+          mode: bundle.match.mode,
+          kind: bundle.match.kind,
+          playMode: bundle.match.playMode,
+          status: bundle.match.status,
+          isRanking: bundle.match.isRanking,
+          tournamentId: bundle.match.tournamentId
+        },
+        payload.spectator ? "spectator_joined" : "participant_joined",
+        {
+          userId: user.id,
+          nickname: user.nickname,
+          participantId,
+          spectator: Boolean(payload.spectator)
+        }
+      );
       const started = await maybeStartMatch(app.db, io, payload.matchId);
       socket.emit("match:snapshot", started);
     });
@@ -87,6 +107,24 @@ export function createRealtime(app: FastifyInstance) {
       }
 
       await joinMatchRoom(payload.matchId, true);
+      await logRankingMatchActivity(
+        {
+          id: bundle.match.id,
+          name: bundle.match.name,
+          mode: bundle.match.mode,
+          kind: bundle.match.kind,
+          playMode: bundle.match.playMode,
+          status: bundle.match.status,
+          isRanking: bundle.match.isRanking,
+          tournamentId: bundle.match.tournamentId
+        },
+        "spectator_joined",
+        {
+          userId: socket.data.user.id,
+          nickname: socket.data.user.nickname,
+          spectator: true
+        }
+      );
       socket.emit("match:snapshot", bundle.match.stateJson);
     });
 
