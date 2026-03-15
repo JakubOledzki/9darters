@@ -35,7 +35,11 @@
   $: isAuthenticated = Boolean(authState.user);
   $: isMatchRoute = activeRoute.name === "match";
   $: if (typeof document !== "undefined") {
-    document.body.classList.toggle("match-screen", isMatchRoute);
+    if (isMatchRoute) {
+      document.body.classList.add("match-screen");
+    } else {
+      document.body.classList.remove("match-screen");
+    }
   }
 </script>
 

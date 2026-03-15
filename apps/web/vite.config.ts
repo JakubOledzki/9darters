@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import legacy from "@vitejs/plugin-legacy";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
@@ -24,8 +25,17 @@ export default defineConfig({
           }
         ]
       }
+    }),
+    legacy({
+      targets: ["defaults", "Android >= 5", "iOS >= 10"],
+      modernPolyfills: true,
+      renderLegacyChunks: true
     })
   ],
+  build: {
+    target: "es2015",
+    cssTarget: "chrome61"
+  },
   server: {
     port: 5173,
     proxy: {

@@ -8,6 +8,7 @@ import { requireUser } from "../lib/auth.js";
 import {
   appendMatchEvent,
   canUserParticipate,
+  createInAppNotifications,
   createMatchRecord,
   findParticipantIdForUser,
   listLiveMatches,
@@ -142,12 +143,36 @@ export async function matchRoutes(app: FastifyInstance) {
     );
 
     await app.db.update(matches).set({ status: "pending" }).where(eq(matches.id, id));
+    await createInAppNotifications(app.db, [
+      {
+        userId: opponent.id,
+        type: "match_invite",
+        title: `${user.nickname} wyzywa Cie na mecz`,
+        body: `${body.name} | ${body.mode} | ${body.isRanking ? "rankingowy" : "towarzyski"} | ${body.playMode === "online" ? "online" : "stacjonarnie"}`,
+        entityType: "match",
+        entityId: id
+      }
+    ]);
     return reply.status(201).send({ id });
   });
 
   app.post("/api/matches/:id/accept", async (request, reply) => {
     const user = requireUser(request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const bundle = await loadMatchBundle(app.db, params.id);
+    if (!bundle) {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    const ownParticipant = bundle.participants.find((participant) => participant.userId === user.id);
+    if (!ownParticipant) {
+      return reply.status(404).send({ error: "MATCH_NOT_FOUND" });
+    }
+
+    if (ownParticipant.status === "accepted") {
+      return reply.status(204).send();
+    }
+
     await app.db
       .update(matchParticipants)
       .set({
@@ -168,6 +193,24 @@ export async function matchRoutes(app: FastifyInstance) {
     }
 
     await appendMatchEvent(app.db, params.id, "match_accepted", findParticipantIdForUser(participants, user.id), {});
+    const invitingParticipant = participants.find((participant) => participant.userId && participant.userId !== user.id);
+    if (invitingParticipant?.userId) {
+      await createInAppNotifications(app.db, [
+        {
+          userId: invitingParticipant.userId,
+          type: "match_ready",
+          title: `${user.nickname} zaakceptowal mecz`,
+          body: `Mecz ${bundle.match.name} jest gotowy do startu.`,
+          entityType: "match",
+          entityId: params.id
+        }
+      ]);
+    }
+
+    if (allAccepted) {
+      await maybeStartMatch(app.db, app.io, params.id);
+    }
+
     return reply.status(204).send();
   });
 

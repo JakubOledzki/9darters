@@ -33,8 +33,11 @@
 
   type NotificationSummary = {
     id: string;
+    type: string;
     title: string;
     body: string;
+    entityType: string;
+    entityId: string;
     isRead: boolean;
     createdAt: string;
   };
@@ -88,6 +91,11 @@
   let tournamentLegsToWin = 3;
   let tournamentSetsToWin = 1;
   let tournamentCountingMode = "simplified";
+
+  $: challengeNotifications = notifications.filter(
+    (notification) => notification.type === "match_invite" && !notification.isRead && notification.entityType === "match"
+  );
+  $: regularNotifications = notifications.filter((notification) => notification.type !== "match_invite");
 
   const launcherTiles: Array<{
     id: Configurator;
@@ -162,11 +170,18 @@
 
     liveMatches = live.matches;
     myMatches = matches.matches.slice(-8).reverse();
-    notifications = notif.notifications.slice(0, 6);
+    notifications = notif.notifications.slice(0, 16);
   }
 
   onMount(() => {
     void loadDashboard();
+    const refreshInterval = window.setInterval(() => {
+      void loadDashboard();
+    }, 15000);
+
+    return () => {
+      window.clearInterval(refreshInterval);
+    };
   });
 
   async function searchUsers(
@@ -390,6 +405,26 @@
       error = (event as { error?: string }).error ?? "Nie udalo sie utworzyc turnieju.";
     }
   }
+
+  async function acceptChallenge(notification: NotificationSummary) {
+    error = "";
+    try {
+      await api(`/matches/${notification.entityId}/accept`, {
+        method: "POST"
+      });
+      await api(`/notifications/${notification.id}/read`, {
+        method: "POST"
+      });
+      await loadDashboard();
+      goto(`/match/${notification.entityId}`);
+    } catch (event) {
+      error = (event as { error?: string }).error ?? "Nie udalo sie zaakceptowac wyzwania.";
+    }
+  }
+
+  function openChallenge(notification: NotificationSummary) {
+    goto(`/match/${notification.entityId}`);
+  }
 </script>
 
 <section class="hero">
@@ -412,6 +447,33 @@
       <button on:click={() => goto("/history")} type="button">Historia</button>
     </div>
   </div>
+</section>
+
+<section class="grid two">
+  <article class="card stack">
+    <div class="inline item-head">
+      <h2>Wyzwania 1v1</h2>
+      <span class="pill">Oczekuje: {challengeNotifications.length}</span>
+    </div>
+
+    <div class="list">
+      {#each challengeNotifications as notification}
+        <div class="list-item challenge-item">
+          <strong>{notification.title}</strong>
+          <span class="muted">{notification.body}</span>
+          <div class="inline challenge-actions">
+            <button class="primary" on:click={() => acceptChallenge(notification)} type="button">Akceptuj</button>
+            <button class="ghost" on:click={() => openChallenge(notification)} type="button">Otworz mecz</button>
+          </div>
+        </div>
+      {:else}
+        <div class="list-item">
+          <strong>Brak oczekujacych wyzwan</strong>
+          <span class="muted">Gdy ktos zaprosi Cie do pojedynku 1v1, zobaczysz to tutaj bez szukania po historii.</span>
+        </div>
+      {/each}
+    </div>
+  </article>
 </section>
 
 <section class="launcher-grid">
@@ -745,7 +807,7 @@
 <section class="card stack">
   <h2>Powiadomienia</h2>
   <div class="list">
-    {#each notifications as notification}
+    {#each regularNotifications as notification}
       <div class="list-item">
         <strong>{notification.title}</strong>
         <span class="muted">{notification.body}</span>

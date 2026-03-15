@@ -33,6 +33,36 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+export async function createInAppNotifications(
+  db: Database,
+  entries: Array<{
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    entityType: string;
+    entityId: string;
+  }>
+) {
+  if (entries.length === 0) {
+    return;
+  }
+
+  await db.insert(notifications).values(
+    entries.map((entry) => ({
+      id: randomUUID(),
+      userId: entry.userId,
+      type: entry.type,
+      title: entry.title,
+      body: entry.body,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      isRead: false,
+      createdAt: nowIso()
+    }))
+  );
+}
+
 export async function loadMatchBundle(db: Database, matchId: string) {
   const [match] = await db.select().from(matches).where(eq(matches.id, matchId)).limit(1);
   if (!match) {
